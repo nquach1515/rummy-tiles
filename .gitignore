@@ -4,3 +4,4 @@ dist
 relay/node_modules
 relay/.wrangler
 *.log
+tsconfig.tsbuildinfo
