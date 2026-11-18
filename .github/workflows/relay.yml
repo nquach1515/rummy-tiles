@@ -1,0 +1,36 @@
+# Deploys the multiplayer relay (relay/) to Cloudflare when it changes on main (the same as `cd relay && npx wrangler deploy --config wrangler.toml`).
+name: Deploy relay to Cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths: ['relay/**', '.github/workflows/relay.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-relay
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - run: npm ci
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: relay
+          wranglerVersion: '4.86.0'
+          # name the relay's own config: from relay/, wrangler otherwise picks up the site's wrangler.jsonc at the repo root
+          # (and fails looking for its dist/)
+          command: deploy --config wrangler.toml
