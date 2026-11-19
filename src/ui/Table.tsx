@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, LayoutGroup, motion, MotionStyle } from 'framer-motion';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { checkTurn } from '../game/engine';
 import { displayOrder } from '../game/rules';
@@ -7,9 +7,10 @@ import { Action, PlayerView, SeatView } from '../net/protocol';
 import { inviteLink } from '../net/site';
 import { Avatar, Modal, Rules, shareInvite } from './common';
 import { isMuted, setMuted, tap, win, yourTurn } from './sound';
-import { TileBack, TileView } from './TileView';
+import { MotionTile, queueFlight, reducedMotion, TileView } from './TileView';
 
 type Target = { kind: 'set'; index: number; pos?: number } | { kind: 'new' } | { kind: 'rack'; pos?: number };
+type From = { x: number; y: number; tw: number };
 
 const EMOJI = ['👍', '😄', '😮', '😅', '🔥', '👏'];
 
@@ -24,10 +25,7 @@ function fitTiles(w: number, h: number, lens: number[], newZone: number, max: nu
     let rows = 1;
     let ok = true;
     for (const len of all) {
-      const sw =
-        len < 0
-          ? -len * tw + 2 * G.pad * tw + G.border
-          : len * tw + (len - 1) * G.inner * tw + 2 * G.pad * tw + G.border;
+      const sw = len < 0 ? -len * tw + 2 * G.pad * tw + G.border : len * tw + (len - 1) * G.inner * tw + 2 * G.pad * tw + G.border;
       if (sw > w) {
         ok = false;
         break;
@@ -94,6 +92,14 @@ function parseTarget(key: string | null, el: Element | null, x: number): Target 
   return null;
 }
 
+/** The centre of an element on screen, if it's there. */
+function centreOf(sel: string): { x: number; y: number } | null {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
 interface Drag {
   grab: string;
   ids: string[];
@@ -144,6 +150,7 @@ export function Table({
     setSortBy(by);
     const sorted = sortTiles(orderRef.current.map(tileOf), by).map((t) => t.id);
     setOrder(sorted);
+    tap(0.6);
   };
   // tiles you drew since your last turn, highlighted for a moment
   const [fresh, setFresh] = useState<Set<string>>(new Set());
@@ -187,6 +194,7 @@ export function Table({
     setWork(prev);
     setSelected(new Set());
     send({ type: 'draft', table: prev });
+    tap(0.6);
   };
   const reset = () => {
     if (!work) return;
@@ -194,11 +202,15 @@ export function Table({
     setWork(view.table.map((s) => [...s]));
     setSelected(new Set());
     send({ type: 'draft', table: null });
+    tap(0.6);
   };
 
   const table = myTurn && work ? work : view.draft?.table ?? view.table;
   const onTable = useMemo(() => new Set(table.flat()), [table]);
-  const rack = rackOrder.filter((id) => !(myTurn && onTable.has(id)));
+  // the rack deals in once the screen is up, so the tiles can fly out of the bag
+  const [dealt, setDealt] = useState(false);
+  useLayoutEffect(() => setDealt(true), []);
+  const rack = dealt ? rackOrder.filter((id) => !(myTurn && onTable.has(id))) : [];
   const check = useMemo(
     () => (myTurn && work && me ? checkTurn({ oldTable: view.table, hand: handIds, melded: me.melded, firstMeld: view.firstMeld }, work) : null),
     [myTurn, work, me, view.table, handIds, view.firstMeld],
@@ -236,20 +248,27 @@ export function Table({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.hint]);
 
-  // ---- the last player's tiles glow for a moment; a soft tap when anyone places tiles ----
+  // ---- the last player's tiles glow for a moment; yours settle with a bump; a soft tap when anyone places tiles ----
   const [glow, setGlow] = useState<Set<string>>(new Set());
+  const [landed, setLanded] = useState<Set<string>>(new Set());
   const lastMoveKey = useRef(lastLog);
   useEffect(() => {
     if (lastMoveKey.current === lastLog) return;
     lastMoveKey.current = lastLog;
     const m = view.lastMove;
-    if (m?.kind === 'play' && m.seat !== you) {
+    if (m?.kind !== 'play') return;
+    if (m.seat !== you) {
       setGlow(new Set(m.placed));
       tap(0.8);
       const t = setTimeout(() => setGlow(new Set()), 3000);
       return () => clearTimeout(t);
     }
-  }, [lastLog, view.lastMove, you]);
+    // your play went through: every set you touched settles
+    const touched = new Set(view.table.filter((s) => s.some((id) => m.placed.includes(id))).flat());
+    setLanded(touched);
+    const t = setTimeout(() => setLanded(new Set()), 700);
+    return () => clearTimeout(t);
+  }, [lastLog, view.lastMove, view.table, you]);
   useEffect(() => {
     if (view.phase === 'roundEnd' && view.result?.winner === you) win();
   }, [view.phase, view.result, you]);
@@ -263,9 +282,73 @@ export function Table({
     return () => clearInterval(t);
   }, [deadline]);
   const secondsLeft = deadline === null ? null : Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  const timerPct = secondsLeft === null || !view.settings.turnSeconds ? null : Math.min(1, secondsLeft / view.settings.turnSeconds);
+
+  // ---- layout: the biggest tiles at which the whole table fits ----
+  const [boardRef, board] = useSize<HTMLDivElement>();
+  const [rackRef, rackSize] = useSize<HTMLDivElement>();
+  const wide = board.w > 700;
+  const { tw, fits } = useMemo(
+    () => fitTiles(board.w - 4, board.h - 4, table.map((s) => s.length), myTurn ? 2.2 : 0, wide ? 60 : 50),
+    [board.w, board.h, table, myTurn, wide],
+  );
+  /**
+   * rack tile size, the rows the whole hand needs (kept for the turn, so the rack doesn't jump), and the most tiles in a
+   * row, so rows come out even (7 and 7, not 13 and 1)
+   */
+  const { rackTw, rackRows, rackPer } = useMemo(() => {
+    const n = Math.max(myTurn ? handIds.length : rack.length, 1);
+    const gap = 5;
+    const big = wide ? 56 : 44;
+    let tw = 24;
+    let per = n;
+    for (let rows = 1; rows <= 4; rows++) {
+      per = Math.ceil(n / rows);
+      tw = Math.floor((rackSize.w - (per - 1) * gap) / per);
+      if (tw >= (wide ? 44 : 32)) break;
+    }
+    tw = Math.max(24, Math.min(tw, big));
+    per = Math.min(per, Math.max(1, Math.floor((rackSize.w + gap) / (tw + gap))));
+    return { rackTw: tw, rackRows: Math.max(1, Math.ceil(n / per)), rackPer: per };
+  }, [rack.length, handIds.length, myTurn, rackSize.w, wide]);
+
+  // ---- animation: tiles keep a layout id, so they slide when they move; tiles that appear fly in ----
+  /** bumped for tiles you drop, so they fly from where you let go instead of from where they were */
+  const seq = useRef<Record<string, number>>({});
+  const lid = (id: string) => (seq.current[id] ? `${id}~${seq.current[id]}` : id);
+  const launch = (ids: string[], from?: From) => {
+    if (!from) return;
+    ids.forEach((id, k) => {
+      seq.current[id] = (seq.current[id] ?? 0) + 1;
+      queueFlight(lid(id), { x: from.x + (k - (ids.length - 1) / 2) * (from.tw + 3), y: from.y, scale: from.tw / Math.max(tw, 1) });
+    });
+  };
+  const visibleKey = `${view.round}|${table.flat().join()}|${rack.join()}`;
+  const seen = useRef<{ key: string; ids: Set<string> | null }>({ key: '', ids: null });
+  if (seen.current.key !== visibleKey) {
+    const prev = seen.current.ids;
+    const ids = new Set([...table.flat(), ...rack]);
+    seen.current = { key: visibleKey, ids };
+    if (prev && !reducedMotion()) {
+      // into your rack: out of the bag (a deal staggers them)
+      const bag = centreOf('[data-bag]') ?? { x: innerWidth / 2, y: 0 };
+      const newRack = rack.filter((id) => !prev.has(id));
+      newRack.forEach((id, k) =>
+        queueFlight(lid(id), { ...bag, scale: 0.35, rotate: k % 2 ? 14 : -14, delay: newRack.length > 2 ? 0.15 + k * 0.045 : 0.05 }),
+      );
+      // onto the table: from the player who put them there
+      const newBoard = table.flat().filter((id) => !prev.has(id));
+      const seat = view.draft?.seat ?? view.lastMove?.seat ?? view.turn;
+      const from = centreOf(`[data-seat="${seat}"]`);
+      if (from) newBoard.forEach((id, k) => queueFlight(lid(id), { ...from, scale: 0.4, rotate: -8, delay: k * 0.06 }));
+      if (newBoard.length && newRack.length === 0) tap(0.6);
+    }
+  }
+  /** changes whenever a tile may have moved, so tiles only measure themselves then (not on every timer tick) */
+  const dep = `${visibleKey}|${JSON.stringify(table)}|${tw}|${rackTw}|${board.w}x${board.h}|${rackSize.w}|${sortBy}|${orderVersion}|${[...selected].join()}`;
 
   // ---- moving tiles ----
-  const doMove = (ids: string[], target: Target) => {
+  const doMove = (ids: string[], target: Target, from?: From) => {
     if (!ids.length) return;
     if (target.kind === 'rack') {
       if (ids.some((id) => !handSet.has(id))) {
@@ -279,11 +362,13 @@ export function Table({
       const anchor = shown[p - rack.slice(0, p).filter((id) => ids.includes(id)).length];
       const rest = orderRef.current.filter((id) => !ids.includes(id));
       const idx = anchor === undefined ? rest.length : rest.indexOf(anchor);
+      launch(ids, from);
       setOrder([...rest.slice(0, idx), ...ids, ...rest.slice(idx)]);
       setSortBy(null);
       if (myTurn && work && ids.some((id) => onTable.has(id))) update(moveOnTable(work, ids, { kind: 'rack' }));
     } else {
       if (!myTurn || !work) return;
+      launch(ids, from);
       update(moveOnTable(work, ids, target));
     }
     setSelected(new Set());
@@ -303,6 +388,7 @@ export function Table({
   const dragRef = useRef<Drag | null>(null);
   const [ghost, setGhost] = useState<{ ids: string[]; x: number; y: number } | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  const ghostTw = Math.max(tw, 36);
   /** Tapping a tile picks it up (or puts it down); with tiles picked up, tapping a tile in another set drops them beside it. */
   const tapTile = (id: string, fromRack: boolean, x: number) => {
     if (!myTurn || fromRack || selected.size === 0) return toggle(id);
@@ -311,8 +397,8 @@ export function Table({
     const el = document.querySelector(`[data-drop="set:${i}:${table[i].indexOf(id)}"]`);
     doMove([...selected], parseTarget(`set:${i}:${table[i].indexOf(id)}`, el, x)!);
   };
-  const live = useRef({ doMove, toggle, tapTile, myTurn, selected });
-  live.current = { doMove, toggle, tapTile, myTurn, selected };
+  const live = useRef({ doMove, toggle, tapTile, myTurn, selected, ghostTw });
+  live.current = { doMove, toggle, tapTile, myTurn, selected, ghostTw };
 
   useEffect(() => {
     const targetAt = (x: number, y: number) => {
@@ -347,7 +433,9 @@ export function Table({
       if (!target) return;
       // not your turn: you can only rearrange your rack
       if (!live.current.myTurn && target.kind !== 'rack') return;
-      live.current.doMove(d.ids, target);
+      // the ghost sits up and to the centre of the pointer (see .drag-ghost)
+      const gtw = live.current.ghostTw;
+      live.current.doMove(d.ids, target, { x: e.clientX, y: e.clientY - gtw * 1.34 * 0.2, tw: gtw });
     };
     const cancel = () => {
       dragRef.current = null;
@@ -370,32 +458,7 @@ export function Table({
     dragRef.current = { grab: id, ids: [id], x0: e.clientX, y0: e.clientY, active: false, fromRack };
   };
 
-  // ---- layout: the biggest tiles at which the whole table fits ----
-  const [boardRef, board] = useSize<HTMLDivElement>();
-  const [rackRef, rackSize] = useSize<HTMLDivElement>();
-  const wide = board.w > 700;
-  const { tw, fits } = useMemo(
-    () => fitTiles(board.w - 4, board.h - 4, table.map((s) => s.length), myTurn ? 2.2 : 0, wide ? 60 : 50),
-    [board.w, board.h, table, myTurn, wide],
-  );
-  /** rack tile size, and the rows the whole hand needs at that size (kept for the turn, so the rack doesn't jump) */
-  const { rackTw, rackRows } = useMemo(() => {
-    const n = Math.max(myTurn ? handIds.length : rack.length, 1);
-    const gap = 5;
-    let tw = 32;
-    for (const rows of [2, 3, 4]) {
-      const per = Math.ceil(n / rows);
-      tw = Math.floor((rackSize.w - (per - 1) * gap) / per);
-      if (tw >= 32 || rows === 4) break;
-    }
-    tw = Math.max(24, Math.min(tw, wide ? 56 : 44));
-    const perRow = Math.max(1, Math.floor((rackSize.w + gap) / (tw + gap)));
-    return { rackTw: tw, rackRows: Math.max(1, Math.ceil(n / perRow)) };
-  }, [rack.length, handIds.length, myTurn, rackSize.w, wide]);
-
   // ---- seats ----
-  const order = view.seats.map((_, i) => ((you ?? 0) + i) % view.seats.length);
-  const others = order.filter((i) => i !== you);
   const name = (i: number) => view.seats[i]?.name ?? `Seat ${i + 1}`;
   const turnName = name(view.turn);
 
@@ -404,179 +467,212 @@ export function Table({
   const [emotes, setEmotes] = useState(false);
   const [muted, setMute] = useState(isMuted());
 
+  // the ribbon on the mat says whose turn it is and what to do
   let status: React.ReactNode;
-  if (!playing) status = 'Round over';
-  else if (myTurn) {
-    if (changed && check?.error) status = <span className="warn">{check.error}</span>;
-    else if (changed) status = <span className="ok">Ready: press Done</span>;
-    else status = me && !me.melded && view.firstMeld ? `Your turn: open with ${view.firstMeld} points from your own tiles, or draw` : 'Your turn: play tiles or draw';
-  } else status = view.draft ? `${turnName} is rearranging the table…` : `${turnName} is thinking…`;
-
+  let statusKey: string;
+  let tone: '' | 'warn' | 'ok' | 'you' = '';
+  if (!playing) {
+    status = 'Round over';
+    statusKey = 'over';
+  } else if (myTurn) {
+    tone = 'you';
+    if (changed && check?.error) {
+      status = check.error;
+      statusKey = `err:${check.error}`;
+      tone = 'warn';
+    } else if (changed) {
+      status = 'Looks good: press Done';
+      statusKey = 'ready';
+      tone = 'ok';
+    } else {
+      status = me && !me.melded && view.firstMeld ? `Your turn: open with ${view.firstMeld}+ points, or draw` : 'Your turn: play tiles or draw';
+      statusKey = 'yours';
+    }
+  } else {
+    status = view.draft ? `${turnName} is rearranging…` : `${turnName} is thinking…`;
+    statusKey = `${view.turn}:${!!view.draft}`;
+  }
   const meldProgress = myTurn && me && !me.melded && view.firstMeld > 0 && changed ? (check?.meldPoints ?? 0) : null;
+
+  const buzzer = !myTurn
+    ? { label: playing ? `${turnName}'s turn` : 'Round over', on: false, act: () => {} }
+    : changed
+      ? { label: 'Done', on: !check?.error, act: () => work && send({ type: 'commit', table: work }) }
+      : { label: view.poolCount ? 'Draw' : 'Pass', on: true, act: () => send({ type: 'draw' }) };
 
   return (
     <div className={`game ${myTurn ? 'my-turn' : ''}`}>
-      <header className="topbar">
-        <button className="btn icon-btn ghost" onClick={() => setMenu(true)} aria-label="Menu">
-          ☰
-        </button>
-        <div className="top-info">
-          <span className="label">Round {view.round}</span>
-          <span className="pool" title="Tiles left in the pool">
-            <TileBack /> {view.poolCount}
-          </span>
-        </div>
-        {view.online && <span className="code-chip">{view.roomCode}</span>}
-        <button className="btn icon-btn ghost" onClick={() => setEmotes((x) => !x)} aria-label="React">
-          ☺
-        </button>
-      </header>
-      {netState !== 'online' && netDetail && <div className="net-banner">{netDetail}</div>}
+      <ScorePad
+        view={view}
+        timerPct={timerPct}
+        secondsLeft={secondsLeft}
+        onMenu={() => setMenu(true)}
+        onEmote={() => setEmotes((x) => !x)}
+        onBotify={(i) => send({ type: 'botify', seat: i })}
+      />
 
-      <div className="opponents">
-        {others.map((i) => (
-          <SeatPlate
-            key={i}
-            index={i}
-            seat={view.seats[i]!}
-            active={playing && view.turn === i}
-            secondsLeft={view.turn === i ? secondsLeft : null}
-            emote={view.emotes.filter((e) => e.seat === i).slice(-1)[0]}
-            canBotify={view.isHost && view.online && !view.seats[i]!.isHost && (view.seats[i]!.standIn || (!view.seats[i]!.isBot && !view.seats[i]!.online))}
-            onBotify={() => send({ type: 'botify', seat: i })}
-          />
-        ))}
-      </div>
-
-      <div className="board-wrap">
-        <div className="mat">
+      <main className="play">
+        {netState !== 'online' && netDetail && <div className="net-banner">{netDetail}</div>}
+        <div className="board-wrap">
+          <div className="mat" />
+          <div className="ribbon-slot">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.div
+                key={statusKey}
+                className={`ribbon ${tone}`}
+                initial={{ y: -26, opacity: 0, rotate: -2 }}
+                animate={{ y: 0, opacity: 1, rotate: 0 }}
+                exit={{ y: -18, opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+              >
+                <span>{status}</span>
+                {meldProgress !== null && <span className={`meld ${meldProgress >= view.firstMeld ? 'ok' : ''}`}>{meldProgress}/{view.firstMeld}</span>}
+              </motion.div>
+            </AnimatePresence>
+          </div>
           <div ref={boardRef} className={`board ${fits ? '' : 'scroll'}`} style={{ '--tw': `${tw}px` } as React.CSSProperties}>
-            {table.length === 0 && !myTurn && <div className="board-empty">The table is empty</div>}
-            <div className="sets">
-              {table.map((set, i) => (
-                <div
-                  key={`${i}:${set[0]}`}
-                  className={`set ${bad.has(i) ? 'bad' : ''} ${hover === `set:${i}` || hover?.startsWith(`set:${i}:`) ? 'hover' : ''}`}
-                  data-drop={`set:${i}`}
-                  onClick={(e) => e.target === e.currentTarget && selected.size > 0 && doMove([...selected], { kind: 'set', index: i })}
-                >
-                  {set.map((id, j) => (
-                    <TileView
-                      key={id}
-                      tile={tileOf(id)}
-                      data-drop={`set:${i}:${j}`}
-                      selected={selected.has(id)}
-                      glow={glow.has(id)}
-                      mine={myTurn && handSet.has(id)}
-                      ghost={!!ghost?.ids.includes(id)}
-                      onPointerDown={grab(id, false)}
-                    />
-                  ))}
-                </div>
-              ))}
-              {myTurn && (
-                <button
-                  className={`new-set ${hover === 'new' ? 'hover' : ''} ${selected.size ? 'ready' : ''}`}
-                  data-drop="new"
-                  onClick={() => selected.size && doMove([...selected], { kind: 'new' })}
-                >
-                  New set
-                </button>
-              )}
+            {table.length === 0 && !myTurn && <div className="board-empty">Nothing on the table yet</div>}
+            <LayoutGroup>
+              <div className="sets">
+                {table.map((set, i) => (
+                  <motion.div
+                    key={`${set[0]}`}
+                    layout="position"
+                    layoutDependency={dep}
+                    transition={{ type: 'spring', stiffness: 520, damping: 42 }}
+                    className={`set ${bad.has(i) ? 'bad' : ''} ${hover === `set:${i}` || hover?.startsWith(`set:${i}:`) ? 'hover' : ''}`}
+                    data-drop={`set:${i}`}
+                    onClick={(e) => e.target === e.currentTarget && selected.size > 0 && doMove([...selected], { kind: 'set', index: i })}
+                  >
+                    {set.map((id, j) => (
+                      <MotionTile
+                        key={lid(id)}
+                        lid={lid(id)}
+                        dep={dep}
+                        tile={tileOf(id)}
+                        drop={`set:${i}:${j}`}
+                        selected={selected.has(id)}
+                        glow={glow.has(id)}
+                        land={landed.has(id)}
+                        mine={myTurn && handSet.has(id)}
+                        ghost={!!ghost?.ids.includes(id)}
+                        onPointerDown={grab(id, false)}
+                      />
+                    ))}
+                  </motion.div>
+                ))}
+                {myTurn && (
+                  <motion.button
+                    layout="position"
+                    layoutDependency={dep}
+                    className={`new-set ${hover === 'new' ? 'hover' : ''} ${selected.size ? 'ready' : ''}`}
+                    data-drop="new"
+                    onClick={() => selected.size && doMove([...selected], { kind: 'new' })}
+                  >
+                    <span className="plus">+</span>
+                    New set
+                  </motion.button>
+                )}
+              </div>
+              <AnimatePresence>
+                {toast && (
+                  <motion.div key={toast.id} className="toast" initial={{ y: 12, opacity: 0, scale: 0.9 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ opacity: 0, y: 6 }}>
+                    {toast.text}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </LayoutGroup>
+          </div>
+        </div>
+
+        <div className="rack-unit">
+          <div
+            ref={rackRef}
+            className={`rack ${hover?.startsWith('rack') ? 'hover' : ''}`}
+            data-drop="rack"
+            style={{ '--tw': `${rackTw}px`, '--per': rackPer, minHeight: rackRows * rackTw * 1.34 + (rackRows - 1) * 5 } as React.CSSProperties}
+            onClick={(e) => {
+              const t = e.target as HTMLElement;
+              if ((t === e.currentTarget || t.classList.contains('rack-tiles')) && selected.size)
+                doMove([...selected].filter((id) => handSet.has(id) && onTable.has(id)), { kind: 'rack' });
+            }}
+          >
+            <div className="rack-tiles">
+            {rack.map((id, k) => (
+              <MotionTile
+                key={lid(id)}
+                lid={lid(id)}
+                dep={dep}
+                tile={tileOf(id)}
+                drop={`rack:${k}`}
+                selected={selected.has(id)}
+                glow={fresh.has(id)}
+                ghost={!!ghost?.ids.includes(id)}
+                onPointerDown={grab(id, true)}
+              />
+            ))}
             </div>
+            {dealt && rack.length === 0 && <div className="rack-empty">{myTurn ? 'All your tiles are on the table' : ''}</div>}
           </div>
-        </div>
-        <AnimatePresence>
-          {toast && (
-            <motion.div key={toast.id} className="toast" initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ opacity: 0 }}>
-              {toast.text}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="status-row">
-        {me && (
-          <SeatPlate
-            seat={me}
-            index={you!}
-            you
-            active={myTurn}
-            secondsLeft={myTurn ? secondsLeft : null}
-            emote={view.emotes.filter((e) => e.seat === you).slice(-1)[0]}
-            compact
-          />
-        )}
-        <div className="status">
-          {status}
-          {meldProgress !== null && (
-            <span className={`meld ${meldProgress >= view.firstMeld ? 'ok' : ''}`}>
-              {meldProgress} / {view.firstMeld}
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="rack-area">
-        <div ref={rackRef} className={`rack ${hover?.startsWith('rack') ? 'hover' : ''}`} data-drop="rack" style={{ '--tw': `${rackTw}px`, minHeight: rackRows * rackTw * 1.34 + (rackRows - 1) * 5 } as React.CSSProperties} onClick={(e) => {
-          if (e.target === e.currentTarget && selected.size) doMove([...selected].filter((id) => handSet.has(id) && onTable.has(id)), { kind: 'rack' });
-        }}>
-          {rack.map((id, k) => (
-            <TileView
-              key={id}
-              tile={tileOf(id)}
-              data-drop={`rack:${k}`}
-              selected={selected.has(id)}
-              glow={fresh.has(id)}
-              ghost={!!ghost?.ids.includes(id)}
-              onPointerDown={grab(id, true)}
-            />
-          ))}
-          {rack.length === 0 && <div className="rack-empty">{myTurn ? 'All your tiles are on the table' : ''}</div>}
-        </div>
-        <div className="controls">
-          <div className="seg small-seg">
-            <button className={sortBy === 'color' ? 'on' : ''} onClick={() => sortRack('color')} title="Sort by colour: runs line up">
-              <span>Runs</span>
-            </button>
-            <button className={sortBy === 'number' ? 'on' : ''} onClick={() => sortRack('number')} title="Sort by number: groups line up">
-              <span>Groups</span>
-            </button>
-          </div>
-          {myTurn && (
-            <>
-              <button className="btn small" disabled={!history.length} onClick={undo}>
-                Undo
-              </button>
-              <button className="btn small" disabled={!changed} onClick={reset}>
-                Reset
-              </button>
-              <button
-                className="btn small"
-                disabled={hinting}
+          <div className="ledge">
+            <div className="tools">
+              <IconBtn label="Sort into runs (by colour)" on={sortBy === 'color'} onClick={() => sortRack('color')}>
+                <span className="mini-num r">1</span>
+                <span className="mini-num r">2</span>
+                <span className="mini-num r">3</span>
+              </IconBtn>
+              <IconBtn label="Sort into groups (by number)" on={sortBy === 'number'} onClick={() => sortRack('number')}>
+                <span className="mini-num r">7</span>
+                <span className="mini-num b">7</span>
+                <span className="mini-num k">7</span>
+              </IconBtn>
+              <span className="tool-gap" />
+              <IconBtn label="Undo" disabled={!myTurn || !history.length} onClick={undo}>
+                <svg viewBox="0 0 24 24" aria-hidden>
+                  <path d="M9 7 4 12l5 5M4.5 12H15a5 5 0 0 1 0 10h-2" />
+                </svg>
+              </IconBtn>
+              <IconBtn label="Put everything back" disabled={!myTurn || !changed} onClick={reset}>
+                <svg viewBox="0 0 24 24" aria-hidden>
+                  <path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4.5h4.5" />
+                </svg>
+              </IconBtn>
+              <IconBtn
+                label="Hint"
+                disabled={!myTurn || hinting}
                 onClick={() => {
                   setHinting(true);
                   send({ type: 'hint' });
                 }}
               >
-                {hinting ? '…' : 'Hint'}
-              </button>
-              {changed ? (
-                <button className="btn primary" disabled={!!check?.error} onClick={() => work && send({ type: 'commit', table: work })}>
-                  Done
-                </button>
-              ) : (
-                <button className="btn primary" onClick={() => send({ type: 'draw' })}>
-                  {view.poolCount ? 'Draw' : 'Pass'}
-                </button>
-              )}
-            </>
-          )}
+                {hinting ? (
+                  <span className="spinner" />
+                ) : (
+                  <svg viewBox="0 0 24 24" aria-hidden>
+                    <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z" />
+                  </svg>
+                )}
+              </IconBtn>
+            </div>
+            <motion.button
+              className={`buzzer ${buzzer.on ? 'on' : ''} ${myTurn ? '' : 'waiting'}`}
+              disabled={!buzzer.on}
+              onClick={buzzer.act}
+              animate={myTurn && !changed && !reducedMotion() ? { scale: [1, 1.05, 1] } : { scale: 1 }}
+              transition={myTurn && !changed ? { duration: 1.6, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.2 }}
+            >
+              <AnimatePresence mode="popLayout" initial={false}>
+                <motion.span key={buzzer.label} initial={{ y: 14, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -14, opacity: 0 }}>
+                  {buzzer.label}
+                </motion.span>
+              </AnimatePresence>
+            </motion.button>
+          </div>
         </div>
-      </div>
+      </main>
 
       {ghost && (
-        <div className="drag-ghost" style={{ left: ghost.x, top: ghost.y, '--tw': `${Math.max(tw, 36)}px` } as React.CSSProperties}>
+        <div className="drag-ghost" style={{ left: ghost.x, top: ghost.y, '--tw': `${ghostTw}px` } as React.CSSProperties}>
           {ghost.ids.map((id) => (
             <TileView key={id} tile={tileOf(id)} selected />
           ))}
@@ -585,7 +681,7 @@ export function Table({
 
       <AnimatePresence>
         {emotes && (
-          <motion.div className="emote-picker panel" initial={{ y: -8, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div className="emote-picker panel" initial={{ y: -8, opacity: 0, scale: 0.95 }} animate={{ y: 0, opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
             {EMOJI.map((e) => (
               <button
                 key={e}
@@ -606,6 +702,9 @@ export function Table({
       <Modal open={menu} onClose={() => setMenu(false)}>
         <div className="menu">
           <h2 className="serif">Rummy Tiles</h2>
+          <div className="dim">
+            Round {view.round} · {view.poolCount} tiles in the bag
+          </div>
           {view.online && (
             <button
               className="btn"
@@ -656,56 +755,157 @@ export function Table({
   );
 }
 
-function SeatPlate({
+function IconBtn({ label, on, disabled, onClick, children }: { label: string; on?: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button className={`tool ${on ? 'on' : ''}`} aria-label={label} title={label} disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * The score pad: every seat in turn order on a sheet of cream paper, with a marker that slides to whoever's turn it
+ * is, and the bag of tiles. A column beside the table on a computer; a strip across the top on a phone.
+ */
+function ScorePad({
+  view,
+  timerPct,
+  secondsLeft,
+  onMenu,
+  onEmote,
+  onBotify,
+}: {
+  view: PlayerView;
+  timerPct: number | null;
+  secondsLeft: number | null;
+  onMenu: () => void;
+  onEmote: () => void;
+  onBotify: (seat: number) => void;
+}) {
+  const playing = view.phase === 'playing';
+  const order = view.seats.map((_, i) => i);
+  return (
+    <aside className="scorepad panel">
+      <div className="pad-head">
+        <button className="tool flat" onClick={onMenu} aria-label="Menu" title="Menu">
+          <svg viewBox="0 0 24 24" aria-hidden>
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+        <div className="pad-title">
+          <span className="label">Round</span>
+          <span className="round-no">{view.round}</span>
+        </div>
+        {view.online && <span className="code-chip">{view.roomCode}</span>}
+      </div>
+      <LayoutGroup id="turn">
+        <ol className="pad-seats">
+          {order.map((i) => {
+            const seat = view.seats[i]!;
+            const active = playing && view.turn === i;
+            const mine = i === view.you;
+            return (
+              <SeatRow
+                key={i}
+                index={i}
+                seat={seat}
+                you={mine}
+                active={active}
+                timerPct={active ? timerPct : null}
+                secondsLeft={active ? secondsLeft : null}
+                emote={view.emotes.filter((e) => e.seat === i).slice(-1)[0]}
+                onEmote={mine ? onEmote : undefined}
+                canBotify={view.isHost && view.online && !seat.isHost && (seat.standIn || (!seat.isBot && !seat.online))}
+                onBotify={() => onBotify(i)}
+              />
+            );
+          })}
+        </ol>
+      </LayoutGroup>
+      <Bag count={view.poolCount} />
+    </aside>
+  );
+}
+
+function SeatRow({
   seat,
   index,
   you,
   active,
+  timerPct,
   secondsLeft,
   emote,
-  compact,
+  onEmote,
   canBotify,
   onBotify,
 }: {
   seat: SeatView;
   index: number;
-  you?: boolean;
+  you: boolean;
   active: boolean;
+  timerPct: number | null;
   secondsLeft: number | null;
   emote?: { id: number; emoji: string };
-  compact?: boolean;
+  onEmote?: () => void;
   canBotify?: boolean;
   onBotify?: () => void;
 }) {
   const [shown, setShown] = useState<{ id: number; emoji: string } | null>(null);
-  const seen = useRef(emote?.id ?? 0);
+  const seenEmote = useRef(emote?.id ?? 0);
   useEffect(() => {
-    if (!emote || emote.id === seen.current) return;
-    seen.current = emote.id;
+    if (!emote || emote.id === seenEmote.current) return;
+    seenEmote.current = emote.id;
     setShown(emote);
     const t = setTimeout(() => setShown(null), 2600);
     return () => clearTimeout(t);
   }, [emote]);
+  // the tile count bumps when it changes
+  const [bump, setBump] = useState(0);
+  const lastCount = useRef(seat.tileCount);
+  useEffect(() => {
+    if (lastCount.current !== seat.tileCount) setBump((b) => b + 1);
+    lastCount.current = seat.tileCount;
+  }, [seat.tileCount]);
+
+  const Token = onEmote ? 'button' : 'div';
   return (
-    <div className={`plate seat-plate p${index % 4} ${active ? 'active' : ''} ${compact ? 'compact' : ''}`}>
-      <Avatar seat={seat} you={!!you} size={compact ? 32 : 34} index={index} />
+    <li className={`seat-row p${index % 4} ${active ? 'active' : ''} ${you ? 'you' : ''}`}>
+      {active && <motion.div layoutId="turn-marker" className="turn-marker" transition={{ type: 'spring', stiffness: 380, damping: 32 }} />}
+      <Token
+        className="token"
+        data-seat={index}
+        onClick={onEmote}
+        aria-label={onEmote ? 'Send a reaction' : undefined}
+        title={onEmote ? 'Send a reaction' : undefined}
+        style={timerPct !== null ? ({ '--pct': timerPct } as React.CSSProperties) : undefined}
+      >
+        {timerPct !== null && <span className={`timer-ring ${secondsLeft !== null && secondsLeft <= 10 ? 'low' : ''}`} />}
+        <Avatar seat={seat} you={you} index={index} size={36} />
+        <motion.span key={bump} className="count-badge" initial={bump ? { scale: 1.6 } : false} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 14 }}>
+          {seat.tileCount}
+        </motion.span>
+        <AnimatePresence>
+          {shown && (
+            <motion.span
+              key={shown.id}
+              className="emote-bubble"
+              initial={{ scale: 0.3, y: 6, opacity: 0 }}
+              animate={{ scale: 1, y: -6, opacity: 1 }}
+              exit={{ opacity: 0, y: -22 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 15 }}
+            >
+              {shown.emoji}
+            </motion.span>
+          )}
+        </AnimatePresence>
+      </Token>
       <div className="seat-text">
         <div className="nm">
-          {seat.name}
+          {you ? 'You' : seat.name}
           {seat.isBot && <span className="tag">Bot</span>}
           {!seat.online && <span className="tag">Away</span>}
         </div>
         <div className="sub">
-          <span className="count">
-            <TileBack /> {seat.tileCount}
-          </span>
-          {!compact && (
-            <span className="mini-rack" aria-hidden>
-              {Array.from({ length: Math.min(seat.tileCount, 12) }, (_, k) => (
-                <i key={k} />
-              ))}
-            </span>
-          )}
           <span className={`score ${seat.score < 0 ? 'neg' : ''}`}>{seat.score > 0 ? `+${seat.score}` : seat.score}</span>
           {secondsLeft !== null && <span className={`clock ${secondsLeft <= 10 ? 'low' : ''}`}>{secondsLeft}s</span>}
         </div>
@@ -715,15 +915,87 @@ function SeatPlate({
           {seat.isBot ? 'Hand back' : 'Bot plays'}
         </button>
       )}
-      <AnimatePresence>
-        {shown && (
-          <motion.div key={shown.id} className="emote-bubble" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ opacity: 0, y: -8 }}>
-            {shown.emoji}
-          </motion.div>
-        )}
-      </AnimatePresence>
+    </li>
+  );
+}
+
+/** The bag the tiles are drawn from; it sags as it empties. */
+function Bag({ count }: { count: number }) {
+  const [bump, setBump] = useState(0);
+  const last = useRef(count);
+  useEffect(() => {
+    if (last.current !== count) setBump((b) => b + 1);
+    last.current = count;
+  }, [count]);
+  const fill = Math.min(1, count / 78);
+  return (
+    <div className="bag-wrap" title="Tiles left in the bag">
+      <motion.div
+        key={bump}
+        className="bag"
+        data-bag
+        style={{ '--fill': fill } as unknown as MotionStyle}
+        initial={bump ? { rotate: -8, scaleY: 0.9 } : false}
+        animate={{ rotate: 0, scaleY: 1 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 10 }}
+      >
+        <span className="bag-tie" />
+        <span className="bag-count">{count}</span>
+      </motion.div>
+      <span className="bag-label">in the bag</span>
     </div>
   );
+}
+
+/** A little burst of tiles for the winner. */
+function Confetti() {
+  const bits = useMemo(
+    () =>
+      Array.from({ length: 22 }, (_, k) => ({
+        k,
+        x: (Math.random() - 0.5) * 520,
+        y: -160 - Math.random() * 240,
+        r: (Math.random() - 0.5) * 540,
+        c: (['r', 'b', 'o', 'k'] as const)[k % 4],
+        n: 1 + Math.floor(Math.random() * 13),
+        d: Math.random() * 0.25,
+      })),
+    [],
+  );
+  if (reducedMotion()) return null;
+  return (
+    <div className="confetti" aria-hidden>
+      {bits.map((b) => (
+        <motion.div
+          key={b.k}
+          className={`tile ${b.c}`}
+          initial={{ x: 0, y: 0, rotate: 0, opacity: 1, scale: 0.4 }}
+          animate={{ x: b.x, y: [0, b.y, b.y + 620], rotate: b.r, opacity: [1, 1, 0], scale: 1 }}
+          transition={{ duration: 2.2, delay: b.d, ease: [0.2, 0.7, 0.4, 1], times: [0, 0.35, 1] }}
+        >
+          <span className="num">{b.n}</span>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+/** A number that counts up to its value. */
+function CountUp({ to, sign }: { to: number; sign?: boolean }) {
+  const [n, setN] = useState(reducedMotion() ? to : 0);
+  useEffect(() => {
+    if (reducedMotion()) return setN(to);
+    let raf = 0;
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / 900);
+      setN(Math.round(to * (1 - (1 - p) ** 3)));
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [to]);
+  return <>{sign && n > 0 ? `+${n}` : n}</>;
 }
 
 function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action) => void; onLeave: () => void }) {
@@ -740,12 +1012,18 @@ function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action)
         <div className="round-end">
           <div className="label">Round {view.round}</div>
           <h2 className="serif">{r.winner === view.you ? 'You won the round!' : `${winner} won the round`}</h2>
-          <p className="dim">{r.reason === 'out' ? `${winner} emptied their rack.` : 'The pool ran out and nobody could play: the lowest rack wins.'}</p>
+          <p className="dim">{r.reason === 'out' ? `${winner} emptied their rack.` : 'The bag ran out and nobody could play: the lowest rack wins.'}</p>
           <div className="results">
-            {order.map((i) => {
+            {order.map((i, k) => {
               const seat = view.seats[i]!;
               return (
-                <div key={i} className={`result-row ${i === r.winner ? 'winner' : ''}`}>
+                <motion.div
+                  key={i}
+                  className={`result-row ${i === r.winner ? 'winner' : ''}`}
+                  initial={{ x: -24, opacity: 0 }}
+                  animate={{ x: 0, opacity: 1 }}
+                  transition={{ delay: 0.15 + k * 0.09, type: 'spring', stiffness: 380, damping: 30 }}
+                >
                   <Avatar seat={seat} you={i === view.you} size={30} index={i} />
                   <div className="who">
                     <div className="nm">{seat.name}</div>
@@ -753,9 +1031,11 @@ function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action)
                       {r.racks[i].length === 0 ? <span className="dim">Out!</span> : sortTiles(r.racks[i], 'color').map((t) => <TileView key={t.id} tile={t} />)}
                     </div>
                   </div>
-                  <div className={`delta ${r.deltas[i] < 0 ? 'neg' : 'pos'}`}>{r.deltas[i] > 0 ? `+${r.deltas[i]}` : r.deltas[i]}</div>
+                  <div className={`delta ${r.deltas[i] < 0 ? 'neg' : 'pos'}`}>
+                    <CountUp to={r.deltas[i]} sign />
+                  </div>
                   <div className="total">{seat.score}</div>
-                </div>
+                </motion.div>
               );
             })}
           </div>
@@ -766,7 +1046,7 @@ function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action)
             {view.isHost ? (
               <>
                 <button className="btn" onClick={() => send({ type: 'newGame' })}>
-                  {view.online ? 'New game' : 'New game'}
+                  New game
                 </button>
                 <button className="btn primary" onClick={() => send({ type: 'nextRound' })}>
                   Next round
@@ -778,6 +1058,7 @@ function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action)
           </div>
         </div>
       </Modal>
+      {open && !hidden && r.winner === view.you && <Confetti key={view.round} />}
       {open && hidden && (
         <div className="reopen">
           <button className="btn primary" onClick={() => setHidden(false)}>
