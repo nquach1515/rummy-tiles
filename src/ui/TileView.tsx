@@ -30,6 +30,15 @@ export const TileView = memo(function TileView({
   );
 });
 
+/** A tile with a letter on it, for titles and the table code. */
+export function LetterTile({ ch, color, style }: { ch: string; color: 'r' | 'b' | 'o' | 'k'; style?: CSSProperties }) {
+  return (
+    <div className={`tile letter ${color}`} style={style}>
+      <span className="num">{ch}</span>
+    </div>
+  );
+}
+
 /** A face-down tile, for counts. */
 export function TileBack({ style }: { style?: CSSProperties }) {
   return <div className="tile back" style={style} />;

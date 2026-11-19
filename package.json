@@ -12,6 +12,8 @@
     "leaktest": "tsx scripts/leaktest.ts"
   },
   "dependencies": {
+    "@fontsource/fredoka": "^5.3.0",
+    "@fontsource/nunito": "^5.3.0",
     "framer-motion": "^11.11.17",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

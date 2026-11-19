@@ -2,10 +2,10 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { ReactNode } from 'react';
 import { SeatView } from '../net/protocol';
 
-/** You are teal; everyone else is orange. */
-export function Avatar({ seat, you, size }: { seat: Pick<SeatView, 'name' | 'online'>; you: boolean; size?: number }) {
+/** Each seat has its own colour (coral, sky, lime, violet); yours also gets a white ring. */
+export function Avatar({ seat, you, size, index }: { seat: Pick<SeatView, 'name' | 'online'>; you: boolean; size?: number; index: number }) {
   return (
-    <div className={`avatar ${you ? 'us' : 'them'} ${seat.online ? '' : 'offline'}`} style={size ? ({ '--size': `${size}px` } as React.CSSProperties) : undefined}>
+    <div className={`avatar p${index % 4} ${you ? 'you' : ''} ${seat.online ? '' : 'offline'}`} style={size ? ({ '--size': `${size}px` } as React.CSSProperties) : undefined}>
       {seat.name.slice(0, 1).toUpperCase()}
     </div>
   );

@@ -3,8 +3,7 @@ import { useState } from 'react';
 import { Action, PlayerView } from '../net/protocol';
 import { inviteLink } from '../net/site';
 import { Avatar, Seg, SHARE_INVITES, shareInvite } from './common';
-
-const SPOTS = ['bottom', 'left', 'top', 'right'];
+import { LetterTile } from './TileView';
 
 export function Lobby({
   view,
@@ -26,8 +25,8 @@ export function Lobby({
   const seated = view.seats.filter(Boolean).length;
   const url = inviteLink(view.roomCode);
   const s = view.settings;
-  // the seats rotate so yours is at the bottom
-  const spot = (i: number) => SPOTS[(i - (view.you ?? 0) + 4) % 4];
+  // your seat comes first, then the others in turn order
+  const place = (i: number) => (i - (view.you ?? 0) + 4) % 4;
 
   const invite = async () => {
     const r = await shareInvite(view.roomCode, url);
@@ -43,8 +42,8 @@ export function Lobby({
         <div className="label">Table code</div>
         <div className="room-code">
           {view.roomCode.split('').map((c, i) => (
-            <motion.div key={i} className="ch" initial={{ y: -16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ delay: i * 0.06 }}>
-              {c}
+            <motion.div key={i} initial={{ y: -16, opacity: 0, rotate: 0 }} animate={{ y: 0, opacity: 1, rotate: [-3, 2, -1, 3][i] }} transition={{ delay: i * 0.06 }}>
+              <LetterTile ch={c} color={(['r', 'b', 'o', 'k'] as const)[i]} />
             </motion.div>
           ))}
         </div>
@@ -56,15 +55,12 @@ export function Lobby({
         </div>
         {netState !== 'online' && netDetail && <div className="err">{netDetail}</div>}
 
-        <div className="lobby-table">
-          <div className="oval">
-            <div className="watermark">Rummy Tiles</div>
-          </div>
+        <div className="seat-grid">
           {view.seats.map((seat, i) => (
-            <div key={i} className={`lobby-seat seat-${spot(i)} ${seat ? 'plate' : 'empty'}`}>
+            <div key={i} className={`lobby-seat ${seat ? 'taken' : 'empty'}`} style={{ order: place(i) }}>
               {seat ? (
                 <>
-                  <Avatar seat={seat} you={i === view.you} />
+                  <Avatar seat={seat} you={i === view.you} index={i} />
                   {i === view.you && editing ? (
                     <form
                       className="rename"

@@ -1,12 +1,11 @@
 import { motion } from 'framer-motion';
 import { useState } from 'react';
 import type { Difficulty } from '../game/bot';
-import { tileOf } from '../game/tiles';
 import { loadSavedHost } from '../net/host';
 import { DEFAULT_SETTINGS } from '../net/protocol';
 import { StartMode } from './App';
 import { Modal, Rules, Seg } from './common';
-import { TileView } from './TileView';
+import { LetterTile } from './TileView';
 
 function savedName(): string {
   try {
@@ -25,7 +24,7 @@ function prefs<T>(key: string, fallback: T): T {
   }
 }
 
-const LOGO = ['r7a', 'b7a', 'j1', 'o7a', 'k7a'];
+const COLORS = ['r', 'b', 'o', 'k'] as const;
 
 export function Home({ onStart }: { onStart: (mode: StartMode, name: string) => void }) {
   const [name, setName] = useState(savedName);
@@ -50,22 +49,22 @@ export function Home({ onStart }: { onStart: (mode: StartMode, name: string) => 
   return (
     <div className="home">
       <div className="home-inner">
-        <div className="logo-tiles" aria-hidden>
-          {LOGO.map((id, i) => (
-            <motion.div
-              key={id}
-              initial={{ y: 40, opacity: 0, rotate: 0 }}
-              animate={{ y: Math.abs(i - 2) * 7, opacity: 1, rotate: (i - 2) * 7 }}
-              transition={{ delay: 0.08 * i, duration: 0.5, ease: [0.2, 0.8, 0.2, 1] }}
-            >
-              <TileView tile={tileOf(id)} />
-            </motion.div>
+        <h1 className="title-tiles" aria-label="Rummy Tiles">
+          {['RUMMY', 'TILES'].map((word, w) => (
+            <div key={word} className="title-row">
+              {word.split('').map((ch, k) => (
+                <motion.div
+                  key={k}
+                  initial={{ y: -30, opacity: 0, rotate: 0 }}
+                  animate={{ y: 0, opacity: 1, rotate: ((k * 7 + w * 3) % 5) - 2 }}
+                  transition={{ delay: 0.05 * (k + w * 5), type: 'spring', stiffness: 380, damping: 18 }}
+                >
+                  <LetterTile ch={ch} color={COLORS[(k + w) % 4]} />
+                </motion.div>
+              ))}
+            </div>
           ))}
-        </div>
-        <div className="wordmark">
-          <div className="big">Rummy Tiles</div>
-          <div className="sub">Runs · Groups · Jokers</div>
-        </div>
+        </h1>
         <p className="tagline">Make runs and groups, rearrange the table, and be first to empty your rack. Free with friends or bots.</p>
 
         <div className="name-row">

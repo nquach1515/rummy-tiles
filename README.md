@@ -4,8 +4,8 @@ The tile rummy game for 2 to 4 players, playable online with friends or against 
 rearrange the table, and be the first to empty your rack. No accounts and no database: a tiny relay server forwards
 messages.
 
-It's built the same way as [Shengji](https://github.com/nquach1515/shengji) and shares its look: a red felt oval
-with a gold rim on a dark cherry background, teal for you and orange for everyone else, and quiet sounds.
+It's built the same way as [Shengji](https://github.com/nquach1515/shengji), with its own "game night" look: a green
+baize mat in a wooden frame on a navy table, chunky cream tiles, a walnut rack, and a colour for each player.
 
 ## How it works
 

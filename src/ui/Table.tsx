@@ -437,6 +437,7 @@ export function Table({
         {others.map((i) => (
           <SeatPlate
             key={i}
+            index={i}
             seat={view.seats[i]!}
             active={playing && view.turn === i}
             secondsLeft={view.turn === i ? secondsLeft : null}
@@ -448,7 +449,7 @@ export function Table({
       </div>
 
       <div className="board-wrap">
-        <div className="oval board-oval">
+        <div className="mat">
           <div ref={boardRef} className={`board ${fits ? '' : 'scroll'}`} style={{ '--tw': `${tw}px` } as React.CSSProperties}>
             {table.length === 0 && !myTurn && <div className="board-empty">The table is empty</div>}
             <div className="sets">
@@ -498,6 +499,7 @@ export function Table({
         {me && (
           <SeatPlate
             seat={me}
+            index={you!}
             you
             active={myTurn}
             secondsLeft={myTurn ? secondsLeft : null}
@@ -656,6 +658,7 @@ export function Table({
 
 function SeatPlate({
   seat,
+  index,
   you,
   active,
   secondsLeft,
@@ -665,6 +668,7 @@ function SeatPlate({
   onBotify,
 }: {
   seat: SeatView;
+  index: number;
   you?: boolean;
   active: boolean;
   secondsLeft: number | null;
@@ -683,8 +687,8 @@ function SeatPlate({
     return () => clearTimeout(t);
   }, [emote]);
   return (
-    <div className={`plate seat-plate ${active ? 'active' : ''} ${compact ? 'compact' : ''}`}>
-      <Avatar seat={seat} you={!!you} size={compact ? 32 : 34} />
+    <div className={`plate seat-plate p${index % 4} ${active ? 'active' : ''} ${compact ? 'compact' : ''}`}>
+      <Avatar seat={seat} you={!!you} size={compact ? 32 : 34} index={index} />
       <div className="seat-text">
         <div className="nm">
           {seat.name}
@@ -695,6 +699,13 @@ function SeatPlate({
           <span className="count">
             <TileBack /> {seat.tileCount}
           </span>
+          {!compact && (
+            <span className="mini-rack" aria-hidden>
+              {Array.from({ length: Math.min(seat.tileCount, 12) }, (_, k) => (
+                <i key={k} />
+              ))}
+            </span>
+          )}
           <span className={`score ${seat.score < 0 ? 'neg' : ''}`}>{seat.score > 0 ? `+${seat.score}` : seat.score}</span>
           {secondsLeft !== null && <span className={`clock ${secondsLeft <= 10 ? 'low' : ''}`}>{secondsLeft}s</span>}
         </div>
@@ -735,7 +746,7 @@ function RoundEnd({ view, send, onLeave }: { view: PlayerView; send: (a: Action)
               const seat = view.seats[i]!;
               return (
                 <div key={i} className={`result-row ${i === r.winner ? 'winner' : ''}`}>
-                  <Avatar seat={seat} you={i === view.you} size={30} />
+                  <Avatar seat={seat} you={i === view.you} size={30} index={i} />
                   <div className="who">
                     <div className="nm">{seat.name}</div>
                     <div className="left-tiles" style={{ '--tw': '22px' } as React.CSSProperties}>

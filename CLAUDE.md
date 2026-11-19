@@ -1,8 +1,8 @@
 # Rummy Tiles
 
 A tile rummy game for 2–4 players, online with friends or against bots. README.md explains the rules, the
-architecture and the bots, so read it first. It's built like the Shengji game (nquach1515/shengji) and should keep
-matching its look.
+architecture and the bots, so read it first. Its code is built like the Shengji game (nquach1515/shengji), but it
+has its own look.
 
 ## Layout
 - `src/game/`: tiles (`tiles.ts`), what counts as a set (`rules.ts`), the turn and round rules (`engine.ts`), and the
@@ -22,9 +22,11 @@ matching its look.
 - Never set GitHub secrets or Cloudflare credentials. The user sets them.
 - Bots see only `redactFor()` state. After any bot change, `npm run leaktest` must pass.
 - Battery matters, because the host's phone runs the game and the bots. Keep bot search inside its node budget.
-- The look should match Shengji:
-  - red felt oval with a gold rim, and a dark cherry background
-  - teal for you, orange for everyone else
+- The look is "game night", and should stay distinct from Shengji's red-and-gold:
+  - a green baize mat with a stitched edge in a wooden frame, on a deep navy background
+  - chunky cream tiles with a raised edge (Fredoka numbers), and a walnut rack with a shelf under each row
+  - cream paper panels and chunky yellow buttons that press down
+  - a colour for each seat (coral, sky, lime, violet)
   - quiet sounds
   - tiles never overlap or clip (the board picks the largest tile size at which every set fits)
 - Check UI changes at phone size (390×844) and desktop size.
