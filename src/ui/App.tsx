@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { useCallback, useState, useSyncExternalStore } from 'react';
+import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import { GameConnection, getClientId, LocalConnection, RemoteConnection } from '../net/client';
 import { clearSavedHost, HostController, loadSavedHost, randomCode } from '../net/host';
 import { Settings } from '../net/protocol';
@@ -81,11 +81,19 @@ export function App() {
     screen = <Table view={view} send={(a) => conn.send(a)} onLeave={leave} netState={status.state} netDetail={status.detail} />;
   }
 
+  // the game screen is locked to the window; the others scroll as a page
+  const locked = key === 'table';
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle('locked', locked);
+    if (!locked) window.scrollTo(0, 0);
+  }, [locked]);
+
   return (
     <>
       <div className="backdrop" />
       {/* the new screen fades in straight away: waiting on the old one's exit animation could leave it stuck on screen */}
-      <motion.div key={key} className="screen" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}>
+      {/* opacity only: a transform here would make the dialogs inside position against this (page-tall) screen */}
+      <motion.div key={key} className={`screen ${locked ? 'fixed' : ''}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}>
         {screen}
       </motion.div>
     </>

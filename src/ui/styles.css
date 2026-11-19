@@ -41,7 +41,13 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; }
+/*
+ * The home and lobby screens scroll as a normal page, so a phone's browser bars can shrink away and the room shows
+ * behind them. The game screen is locked to the window (html.locked): it never scrolls, so tiles can be dragged.
+ */
+html, body, #root { min-height: 100%; }
+html { background: var(--night0); }
+html.locked, html.locked body, html.locked #root { height: 100%; overflow: hidden; overscroll-behavior: none; }
 body {
   margin: 0;
   background: var(--night0);
@@ -49,7 +55,7 @@ body {
   font-family: 'Nunito', ui-rounded, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-weight: 600;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow-x: clip;
   user-select: none;
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -58,7 +64,8 @@ button { font: inherit; color: inherit; }
 input { font: inherit; }
 h1, h2, h3 { font-family: var(--display); font-weight: 600; }
 
-.screen { position: fixed; inset: 0; z-index: 1; }
+.screen { position: relative; z-index: 1; min-height: 100dvh; display: flex; flex-direction: column; }
+.screen.fixed { position: fixed; inset: 0; min-height: 0; }
 
 /* ---------- backdrop: a navy room with a lamp over the table ---------- */
 .backdrop {
@@ -291,13 +298,12 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; }
 
 /* ---------- home: the title on two racks, a name tag, and three big choice tiles ---------- */
 .home {
-  height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  flex: 1;
+  overflow-x: clip;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: max(24px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+  padding: calc(env(safe-area-inset-top) + 24px) calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 24px) calc(env(safe-area-inset-left) + 16px);
   gap: 18px;
 }
 .home-inner {
@@ -406,7 +412,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; }
 }
 
 /* ---------- lobby: the code on a rack, a guest list, and the house rules ---------- */
-.lobby { height: 100%; overflow-y: auto; overflow-x: hidden; display: flex; padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
+.lobby { flex: 1; overflow-x: clip; display: flex; padding: calc(env(safe-area-inset-top) + 20px) calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 24px) calc(env(safe-area-inset-left) + 16px); }
 .lobby-inner { width: min(860px, 100%); margin: auto; display: grid; grid-template-columns: 1fr; gap: 16px; }
 .lobby-head { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .code-rack {
